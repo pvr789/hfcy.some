@@ -1,7 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { doc, onSnapshot, collection, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Clock } from 'lucide-react';
+import { LOGO_URL } from '../lib/constants';
+import { formatTurn } from '../lib/utils';
+import useClock from '../hooks/useClock';
+import VisorStart from './VisorStart';
 
 export default function UserView() {
   const [globalConfig, setGlobalConfig] = useState({ audioEnabled: true, audioLanguage: 'es' });
@@ -13,13 +16,10 @@ export default function UserView() {
   const [loading, setLoading] = useState(true);
   const [started, setStarted] = useState(false);
   
-  const [time, setTime] = useState(new Date());
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const { date: dateString, time: clockTime } = useClock();
   
   const isPlayingRef = useRef(false);
+
   // 1. Cargar Configuración Global
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'system/config'), (snap) => {
@@ -31,22 +31,25 @@ export default function UserView() {
     return () => unsub();
   }, []);
 
-  // 2. Escuchar nuevos llamados en Historial (para la cola)
-  const isFirstRun = useRef(true);
-  
+  // 2. Historial: al abrir, mostrar los últimos llamados SIN anunciarlos;
+  //    después, poner en la cola solo los llamados nuevos.
   useEffect(() => {
     const q = query(collection(db, "system/calls/history"), orderBy("timestamp", "desc"), limit(10));
+    let initialLoad = true;
     const unsub = onSnapshot(q, (snap) => {
-      if (isFirstRun.current) {
-        // Carga inicial: poblar historial directamente sin reproducir sonido
-        const initialDocs = [];
-        snap.forEach(doc => initialDocs.push(doc.data()));
-        setHistory(initialDocs.slice(0, 5));
-        isFirstRun.current = false;
+      if (initialLoad) {
+        initialLoad = false;
+        const recent = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          // Sin duplicados: "Repetir llamado" deja el mismo turno dos veces en el historial
+          if (!recent.some(item => item.letter === data.letter && item.number === data.number && item.moduleId === data.moduleId)) {
+            recent.push(data);
+          }
+        });
+        setHistory(recent.slice(0, 5));
         return;
       }
-      
-      // Llamados nuevos que entran después de la carga:
       snap.docChanges().forEach(change => {
         if (change.type === 'added') {
           const data = change.doc.data();
@@ -97,19 +100,24 @@ export default function UserView() {
           const currentAudio = sequence[currentIndex];
           currentIndex++;
           
-          currentAudio.play().catch(e => {
-            console.warn(`Audio faltante o error: ${currentAudio.src}`, e);
-            // Si falla, pasamos inmediatamente al siguiente
-            playNextInSequence();
-          });
-          
-          currentAudio.onended = () => {
+          // Un audio puede fallar por play().catch y por onerror a la vez:
+          // avanzamos una sola vez para no saltarnos el siguiente archivo.
+          let advanced = false;
+          const advance = () => {
+            if (advanced) return;
+            advanced = true;
             playNextInSequence();
           };
+
+          currentAudio.onended = advance;
           currentAudio.onerror = () => {
             console.warn(`Audio no encontrado (404): ${currentAudio.src}`);
-            playNextInSequence();
+            advance();
           };
+          currentAudio.play().catch(e => {
+            console.warn(`Audio faltante o error: ${currentAudio.src}`, e);
+            advance();
+          });
         };
 
         playNextInSequence();
@@ -158,31 +166,11 @@ export default function UserView() {
   };
 
   if (!started) {
-    return (
-      <div className="viewer-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center'}}>
-        <div className="blobs">
-          <div className="blob blob-1"></div>
-          <div className="blob blob-2"></div>
-        </div>
-        <button 
-          className="btn primary massive active-press"
-          onClick={handleStart}
-          style={{zIndex: 10, fontSize: '2rem', padding: '2rem 4rem'}}
-        >
-          Iniciar Pantalla 🔊
-        </button>
-      </div>
-    );
+    return <VisorStart onStart={handleStart} />;
   }
 
   const displayData = currentPlaying || history[0];
 
-  const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-  const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
-
-  const dateString = `${dayNames[time.getDay()]}, ${time.getDate()} de ${monthNames[time.getMonth()]}`;
-  const hours = String(time.getHours()).padStart(2, '0');
-  const minutes = String(time.getMinutes()).padStart(2, '0');
 
   return (
     <div 
@@ -201,7 +189,7 @@ export default function UserView() {
           <div className="w-full rounded-2xl bg-white/90 backdrop-blur-md border border-slate-200/80 px-5 py-1.5 flex items-center justify-between shadow-sm">
             <div className="flex items-center gap-3.5">
               <div className="w-11 h-11 rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 shadow-sm border border-slate-200/80 bg-white">
-                <img alt="Hospital de Yumbel" className="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAnlb_Qek0e-k-UYeE3t5ZspyVUV1JKd7q2PrDfISINdEgDiEAQxBazBDTZ6DbFQJtfEbM1BKTFNAmCOGk6DHHa-xyqFVD_B8wfVLt6NkAjYw9fXfSTtvzp9XAeEecdGvKAsEaO5DBhWugyKPaZOSulylIuVy3v20xOgzxz-oGJe9LcDcX4OCWe4RQfGosf53mUP9xGTVx3bpqn-Svo5N4IxP4oRihjGMmBmAaQIwvYq-yoEh5PjPHju8XJW45ZSdSTJREWFSNN9KjjzPk" />
+                <img alt="Hospital de Yumbel" className="w-full h-full object-cover" src={LOGO_URL} />
               </div>
               <div className="flex flex-col justify-center">
                 <div className="flex items-center gap-2">
@@ -218,7 +206,7 @@ export default function UserView() {
                 </div>
                 <div className="h-7 w-px bg-slate-200"></div>
                 <div className="flex items-baseline gap-1.5 font-display font-bold select-none leading-none pl-1">
-                  <span className="text-4xl lg:text-5xl tracking-tight font-black tabular-nums text-slate-900 leading-none drop-shadow-sm">{hours}:{minutes}</span>
+                  <span className="text-4xl lg:text-5xl tracking-tight font-black tabular-nums text-slate-900 leading-none drop-shadow-sm">{clockTime}</span>
                   <span className="text-sm lg:text-base font-black text-teal-700 tracking-wider">HRS</span>
                 </div>
               </div>
@@ -256,7 +244,7 @@ export default function UserView() {
                   </div>
                   <div className="flex-1 flex items-center justify-center py-0.5">
                     <span className={`font-display font-black text-[#0f172a] tracking-normal select-none leading-none tabular-nums whitespace-nowrap drop-shadow-sm ${currentPlaying ? 'text-teal-700 transition-colors duration-300' : 'transition-colors duration-300'}`} style={{fontSize: 'clamp(8.5rem, 15vw, 13.5rem)', fontWeight: 900, lineHeight: 0.85}}>
-                      {displayData.letter} - {displayData.number.toString().padStart(2, '0')}
+                      {formatTurn(displayData.letter, displayData.number).replace('-', ' - ')}
                     </span>
                   </div>
                 </div>
@@ -307,7 +295,7 @@ export default function UserView() {
                 .map((item, index) => (
                 <div key={`${item.letter}-${item.number}-${item.moduleId}-${index}`} className="flex flex-col items-center justify-center py-2 px-3 rounded-xl bg-white border border-slate-200/90 shadow-sm transition-all gap-1.5">
                   <span className="font-display font-black tracking-tight text-slate-900 tabular-nums leading-none select-none drop-shadow-sm" style={{fontSize: 'clamp(3.6rem, 5.2vw, 5.2rem)', fontWeight: 900, lineHeight: 0.88}}>
-                    {item.letter} - {item.number.toString().padStart(2, '0')}
+                    {formatTurn(item.letter, item.number).replace('-', ' - ')}
                   </span>
                   <span className="w-full text-center font-medium uppercase px-2 py-2 rounded-lg bg-teal-50 text-teal-800 border border-teal-200/90 tracking-wider shadow-sm leading-none select-none" style={{fontSize: 'clamp(1.75rem, 2.5vw, 2.6rem)', letterSpacing: '0.05em'}}>
                     {(() => {

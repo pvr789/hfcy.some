@@ -30,3 +30,6 @@ users.json
 
 # Custom
 _to_delete/
+
+# Caché de Firebase Hosting (se genera al publicar)
+.firebase/

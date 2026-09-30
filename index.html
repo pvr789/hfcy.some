@@ -1,33 +1,39 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#006BB9" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lista-Sitcker26</title>
-    <!-- Google Fonts: Plus Jakarta Sans & Space Grotesk -->
+    <title>Sistema de Turnos SOME · Hospital de Yumbel</title>
+    <!-- Google Fonts: Plus Jakarta Sans (interfaz) y Space Grotesk (números de turno y visor) -->
     <link href="https://fonts.googleapis.com" rel="preconnect">
     <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect">
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-    <!-- Material Symbols Outlined -->
-    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
         corePlugins: { preflight: false },
+        // Clases que solo aparecen dentro de la ventana flotante del operador
+        // (el CDN solo genera las clases que ve en la página principal).
+        safelist: ['animate-spin', 'flex-1', 'h-1', 'p-5', 'text-6xl', 'text-base', 'text-slate-800'],
         theme: {
           extend: {
             fontFamily: {
-              sans: ['Inter', 'sans-serif'],
+              sans: ['Inter', 'sans-serif'],            // la usa el visor: no cambiar
               display: ['Space Grotesk', 'sans-serif'],
+              ui: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
             },
             colors: {
               brand: { navy: '#0b1326', dark: '#0f172a', accent: '#0d9488' }
             },
             boxShadow: {
-              'display-card': '0 25px 60px -15px rgba(30, 41, 59, 0.12), 0 10px 25px -10px rgba(30, 41, 59, 0.08)'
+              'display-card': '0 25px 60px -15px rgba(30, 41, 59, 0.12), 0 10px 25px -10px rgba(30, 41, 59, 0.08)',
+              card: '0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -12px rgba(15, 23, 42, 0.10)',
+              pop: '0 24px 64px -16px rgba(15, 23, 42, 0.35)'
             }
           }
         }

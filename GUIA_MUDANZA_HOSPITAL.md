@@ -17,8 +17,8 @@ Esta carpeta contiene todo el código listo y configurado. Cuando quieras subir 
 ## Paso 3: Configurar a la Jefa (Super Admin)
 Debes decirle al código cuál será el correo oficial que tendrá permisos de Super Administrador. Tienes que cambiar el correo actual (`17471333-2@some.cl`) por el nuevo en **DOS** lugares:
 
-1. **Archivo 1:** Abre `src/App.jsx` y busca la línea 12:
-   `const SUPER_ADMIN_EMAIL = 'el-nuevo-correo@gmail.com';`
+1. **Archivo 1:** Abre `src/lib/constants.js` y cambia:
+   `export const SUPER_ADMIN_EMAIL = 'el-nuevo-correo@gmail.com';`
 2. **Archivo 2:** Abre `firestore.rules` y busca la línea 7:
    `request.auth.token.email == "el-nuevo-correo@gmail.com" ||`
 
@@ -38,12 +38,11 @@ Abre la terminal (consola) en esta misma carpeta y ejecuta estos 3 comandos en o
 
 ---
 
-## Qué hacer si se borra la cuenta del Administrador (SuperAdmin) por error
+## Qué hacer si se borra la cuenta del administrador por error
 
-Por motivos de seguridad, la aplicación ya no auto-crea la cuenta de administrador si el login falla. 
-Si por algún accidente se elimina el usuario SuperAdmin desde la pestaña Authentication en Firebase, sigue estos pasos para restaurarla:
+Por seguridad, la aplicación ya no crea sola la cuenta del administrador cuando falla el inicio de sesión. Si alguien la borra en **Authentication**, se restaura así:
 
-1. Ingresa a la consola de Firebase del proyecto.
-2. Ve a **Authentication** -> **Users**.
-3. Haz clic en **Add user** y crea un nuevo usuario con el correo del administrador (ej. \`17471333-2@some.cl\`) y una contraseña segura.
-4. (Opcional pero recomendado) Ve a **Firestore Database** -> colección \`users\`. Si el documento correspondiente al UID de la cuenta no existe o el campo \`role\` no es \`superuser\`, asegúrate de actualizarlo (aunque \`App.jsx\` todavía tiene un bloque de auto-registro en Firestore si el correo coincide con \`SUPER_ADMIN_EMAIL\`).
+1. Entra a la consola de Firebase del proyecto.
+2. Ve a **Authentication → Users** y haz clic en **Add user**.
+3. Crea el usuario con el correo del administrador (el de `SUPER_ADMIN_EMAIL` en `src/lib/constants.js`; hoy `17471333-2@some.cl`) y una contraseña segura.
+4. Inicia sesión en `/loginS` con ese correo. Si en Firestore no existe su documento en `users`, la app lo crea sola con el rol `superuser` (lo hace `App.jsx`, solo para ese correo). El documento de la cuenta anterior queda sin uso y se puede borrar.

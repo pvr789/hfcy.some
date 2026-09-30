@@ -1,685 +1,424 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { runTransaction, doc, getDoc, setDoc, updateDoc, onSnapshot, collection, addDoc } from 'firebase/firestore';
+import { getDoc, doc, updateDoc, onSnapshot, addDoc, runTransaction } from 'firebase/firestore';
 import { db, auth } from '../firebase';
-import { LogOut, ArrowRight, Settings2, Hash, Type, Volume2, VolumeX, Globe, Repeat, Copy, LayoutGrid, Pause, Play, PictureInPicture } from 'lucide-react';
+import { ArrowRight, LoaderCircle, LogOut, PictureInPicture2, Repeat, UserX, Volume2, VolumeX } from 'lucide-react';
+import { FIXED_MODULES } from '../lib/constants';
+import { formatTurn, nextTurn } from '../lib/utils';
+import { moduleRef, configRef, callsHistoryRef, occupyModule, freeModule } from '../lib/modules';
+import { AREAS, AreaContext, useArea } from '../lib/theme';
+import useModulesStatus from '../hooks/useModulesStatus';
+import AppHeader from './AppHeader';
+import ManualTurnCard from './ManualTurnCard';
+import LoadingScreen from './ui/LoadingScreen';
+import Button from './ui/Button';
+import Badge from './ui/Badge';
+import Toggle from './ui/Toggle';
+import { Card, CardHeader } from './ui/Card';
+import { Label } from './ui/Field';
 
-const FIXED_MODULES = [
-  { id: 'modulo_a', name: 'Módulo A', letter: 'A' },
-  { id: 'modulo_b', name: 'Módulo B', letter: 'B' },
-  { id: 'modulo_c', name: 'Módulo C', letter: 'C' },
-  { id: 'modulo_d', name: 'Módulo D', letter: 'D' },
-  { id: 'modulo_e', name: 'Módulo E', letter: 'E' },
-];
+const COOLDOWN_MS = 3000;
+const LANGUAGES = [['es', 'Español'], ['en', 'Inglés']];
+const OPERATOR = AREAS.operator;
 
 export default function ClientAdmin({ onLogout }) {
   const [operator, setOperator] = useState(null);
   const [selectedModule, setSelectedModule] = useState(null);
-  
   const [globalQueue, setGlobalQueue] = useState({ audioEnabled: true, audioLanguage: 'es' });
-  const [moduleState, setModuleState] = useState({ letter: 'A', number: 0, isPaused: false });
-  const [manualTurn, setManualTurn] = useState({ letter: 'A', number: '' });
-  
+  const [moduleState, setModuleState] = useState({ letter: 'A', number: 0 });
   const [loading, setLoading] = useState(true);
-
   const [isCoolingDown, setIsCoolingDown] = useState(false);
   const [pipWindow, setPipWindow] = useState(null);
-  
-  const [modulesStatus, setModulesStatus] = useState({});
+  const modulesStatus = useModulesStatus();
 
-  const [liveTime, setLiveTime] = useState('');
-  const [liveDate, setLiveDate] = useState('');
-
+  // Perfil del operador
   useEffect(() => {
-    const updateTime = () => {
-      const now = new Date();
-      setLiveTime(now.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }));
-      const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-      const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
-      setLiveDate(`${days[now.getDay()]}, ${now.getDate()} de ${months[now.getMonth()]}`);
-    };
-    updateTime();
-    const intId = setInterval(updateTime, 1000);
-    return () => clearInterval(intId);
-  }, []);
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      onLogout();
+      return;
+    }
+    getDoc(doc(db, 'users', uid))
+      .then((snap) => { if (snap.exists()) setOperator({ id: uid, ...snap.data() }); })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, [onLogout]);
 
+  // Configuración global (fila, audio, idioma)
+  useEffect(() => onSnapshot(configRef(), (snap) => {
+    if (snap.exists()) setGlobalQueue(snap.data());
+  }), []);
+
+  // Estado del módulo seleccionado
   useEffect(() => {
-    const unsubs = FIXED_MODULES.map(mod => {
-      return onSnapshot(doc(db, `system/modules_${mod.id}`), (snap) => {
-        if (snap.exists()) {
-          setModulesStatus(prev => ({
-            ...prev,
-            [mod.id]: snap.data()
-          }));
-        }
-      });
+    if (!selectedModule) return;
+    return onSnapshot(moduleRef(selectedModule.id), (snap) => {
+      if (snap.exists()) setModuleState(snap.data());
     });
-    return () => unsubs.forEach(unsub => unsub());
-  }, []);
+  }, [selectedModule]);
+
+  const operatorKey = operator ? (operator.rut || operator.id) : null;
+
+  const startCooldown = () => {
+    setIsCoolingDown(true);
+    setTimeout(() => setIsCoolingDown(false), COOLDOWN_MS);
+  };
+
+  // Registra un llamado: el visor lo muestra y, si la voz está activa, lo anuncia.
+  // timestamp en milisegundos (número, Date.now()): el visor ordena el historial por este campo.
+  const announceCall = (letter, number) => addDoc(callsHistoryRef(), {
+    letter,
+    number,
+    moduleName: selectedModule.name,
+    moduleId: selectedModule.id,
+    timestamp: Date.now(),
+  });
+
+  const updateConfig = (data) => updateDoc(configRef(), data).catch(console.error);
+
+  const repeatAudio = async () => {
+    if (!selectedModule || !globalQueue.audioEnabled || isCoolingDown) return;
+    try {
+      await announceCall(moduleState.letter, moduleState.number);
+      startCooldown();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const advanceTurn = async () => {
+    if (!selectedModule || isCoolingDown) return;
+    try {
+      const next = await runTransaction(db, async (tx) => {
+        const globalSnap = await tx.get(configRef());
+        if (!globalSnap.exists()) throw new Error('No existe system/config');
+        const data = globalSnap.data();
+        const turn = nextTurn(data.globalTurnLetter || 'A', data.globalTurnNumber ?? 0);
+        tx.update(configRef(), { globalTurnNumber: turn.number, globalTurnLetter: turn.letter });
+        tx.set(moduleRef(selectedModule.id), { letter: turn.letter, number: turn.number }, { merge: true });
+        return turn;
+      });
+
+      // Siempre se registra, aunque la voz esté apagada, para que el visor lo muestre.
+      await announceCall(next.letter, next.number);
+      startCooldown();
+    } catch (err) {
+      console.error(err);
+      alert('Hubo un error al avanzar el turno.');
+    }
+  };
 
   const openPip = async () => {
     if (!('documentPictureInPicture' in window)) {
-      alert('Tu navegador no soporta el Modo Flotante. Usa Chrome o Edge en su versión más reciente.');
+      alert('Tu navegador no soporta el Modo Compacto. Usa Chrome o Edge en su versión más reciente.');
       return;
     }
-
     try {
-      const pip = await window.documentPictureInPicture.requestWindow({
-        width: 320,
-        height: 480,
-      });
+      const pip = await window.documentPictureInPicture.requestWindow({ width: 320, height: 480 });
 
+      // Copiar los estilos de la página a la ventana flotante
       [...document.styleSheets].forEach((styleSheet) => {
         try {
-          const cssRules = [...styleSheet.cssRules].map((rule) => rule.cssText).join('');
           const style = document.createElement('style');
-          style.textContent = cssRules;
+          style.textContent = [...styleSheet.cssRules].map((rule) => rule.cssText).join('');
           pip.document.head.appendChild(style);
-        } catch (err) {
-          // eslint-disable-next-line no-unused-vars
-          const e = err;
+        } catch {
           const link = document.createElement('link');
           link.rel = 'stylesheet';
-          link.type = styleSheet.type;
-          link.media = styleSheet.media;
           link.href = styleSheet.href;
           pip.document.head.appendChild(link);
         }
       });
 
-      const bodyClass = document.body.className;
-      pip.document.body.className = bodyClass;
-      pip.document.body.style.background = '#f8fafc';
-      pip.document.body.style.margin = '0';
-      pip.document.body.style.padding = '0';
+      pip.document.title = 'Turnos · Modo compacto';
+      Object.assign(pip.document.body.style, { background: '#ffffff', margin: '0', padding: '0' });
 
       const pipRoot = document.createElement('div');
       pipRoot.id = 'pip-root';
       pip.document.body.appendChild(pipRoot);
 
       setPipWindow(pip);
-
-      pip.addEventListener('pagehide', () => {
-        setPipWindow(null);
-      });
+      pip.addEventListener('pagehide', () => setPipWindow(null));
     } catch (error) {
       console.error(error);
-      alert('No se pudo abrir el modo flotante.');
-    }
-  };
-
-  useEffect(() => {
-    const fetchUser = async () => {
-      const uid = auth.currentUser?.uid;
-      if (!uid) {
-        onLogout();
-        return;
-      }
-      try {
-        const userDoc = await getDoc(doc(db, 'users', uid));
-        if (userDoc.exists()) {
-          setOperator({ id: uid, ...userDoc.data() });
-        }
-      } catch (err) {
-          // eslint-disable-next-line no-unused-vars
-          const e = err;
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchUser();
-  }, [onLogout]);
-
-  useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'system/config'), (docSnap) => {
-      if (docSnap.exists()) {
-        setGlobalQueue(docSnap.data());
-      }
-    });
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    if (!selectedModule) return;
-    const unsub = onSnapshot(doc(db, `system/modules_${selectedModule.id}`), (docSnap) => {
-      if (docSnap.exists()) {
-        setModuleState(docSnap.data());
-      }
-    });
-    return () => unsub();
-  }, [selectedModule]);
-
-  const handleSetTurn = async () => {
-    const num = parseInt(manualTurn.number, 10);
-    if (isNaN(num) || num < 1 || num > 99) {
-      alert("Por favor ingresa un número de turno válido entre 1 y 99.");
-      return;
-    }
-
-    if (!window.confirm(`¿Estás seguro que deseas fijar el próximo turno global en ${manualTurn.letter}-${num}? Todos los módulos saltarán a este número.`)) {
-      return;
-    }
-
-    try {
-      const turnRef = doc(db, `system/config`);
-      await updateDoc(turnRef, {
-        globalTurnLetter: manualTurn.letter,
-        globalTurnNumber: num - 1
-      });
-      setManualTurn({ letter: manualTurn.letter, number: '' });
-    } catch (err) {
-          // eslint-disable-next-line no-unused-vars
-          const e = err;
-      console.error(e);
-    }
-  };
-
-  const toggleAudio = async () => {
-    try {
-      const turnRef = doc(db, `system/config`);
-      await updateDoc(turnRef, {
-        audioEnabled: !globalQueue.audioEnabled
-      });
-    } catch (err) {
-          // eslint-disable-next-line no-unused-vars
-          const e = err;
-      console.error(e);
-    }
-  };
-
-  const setLanguage = async (lang) => {
-    try {
-      const turnRef = doc(db, `system/config`);
-      await updateDoc(turnRef, {
-        audioLanguage: lang
-      });
-    } catch (err) {
-          // eslint-disable-next-line no-unused-vars
-          const e = err;
-      console.error(e);
-    }
-  };
-
-  const repeatAudio = async () => {
-    if (!selectedModule || !globalQueue.audioEnabled || isCoolingDown) return;
-    try {
-      await addDoc(collection(db, `system/calls/history`), {
-        letter: moduleState.letter,
-        number: moduleState.number,
-        moduleName: selectedModule.name,
-        moduleId: selectedModule.id,
-        timestamp: Date.now(),
-      });
-      setIsCoolingDown(true);
-      setTimeout(() => setIsCoolingDown(false), 3000);
-    } catch (err) {
-          // eslint-disable-next-line no-unused-vars
-          const e = err;
-      console.error(e);
-    }
-  };
-
-  const advanceTurn = async () => {
-    if (!selectedModule || isCoolingDown) return;
-
-    try {
-      const globalTurnRef = doc(db, 'system/config');
-      const moduleRef = doc(db, `system/modules_${selectedModule.id}`);
-
-      let newLetter;
-      let newNumber;
-
-      await runTransaction(db, async (transaction) => {
-        const globalSnap = await transaction.get(globalTurnRef);
-        const moduleSnap = await transaction.get(moduleRef);
-
-        if (!globalSnap.exists() || !moduleSnap.exists()) {
-          throw new Error("Datos no encontrados");
-        }
-
-        const globalData = globalSnap.data();
-        let currentNumber = globalData.globalTurnNumber !== undefined ? globalData.globalTurnNumber : 0;
-        let currentLetter = globalData.globalTurnLetter || 'A';
-
-        newNumber = currentNumber + 1;
-        newLetter = currentLetter;
-
-        if (newNumber > 99) {
-          newNumber = 1;
-          const letters = ['A','B','C','D','E'];
-          const idx = letters.indexOf(currentLetter);
-          newLetter = letters[(idx + 1) % letters.length];
-        }
-
-        transaction.update(globalTurnRef, {
-          globalTurnNumber: newNumber,
-          globalTurnLetter: newLetter
-        });
-
-        transaction.update(moduleRef, {
-          letter: newLetter,
-          number: newNumber
-        });
-      });
-
-      await addDoc(collection(db, `system/calls/history`), {
-          letter: newLetter,
-          number: newNumber,
-          moduleName: selectedModule.name,
-          moduleId: selectedModule.id,
-          timestamp: Date.now(),
-        });
-
-        setIsCoolingDown(true);
-        setTimeout(() => setIsCoolingDown(false), 3000);
-      
-    } catch (err) {
-          // eslint-disable-next-line no-unused-vars
-          const e = err;
-      console.error(e);
-      alert('Hubo un error al avanzar el turno.');
+      alert('No se pudo abrir el modo compacto.');
     }
   };
 
   const handleLogoutAction = async () => {
     if (pipWindow) pipWindow.close();
-    
     if (selectedModule) {
-      try {
-        const modRef = doc(db, `system/modules_${selectedModule.id}`);
-        await setDoc(modRef, {
-          activeOperatorId: null,
-          activeOperatorName: null
-        }, { merge: true });
-      } catch (err) {
-          // eslint-disable-next-line no-unused-vars
-          const e = err;
-        console.error(e);
-      }
+      await freeModule(selectedModule.id).catch(console.error);
     }
     onLogout();
   };
 
   const handleSelectModule = async (mod) => {
     try {
-      const modRef = doc(db, `system/modules_${mod.id}`);
-      await setDoc(modRef, {
-        activeOperatorId: operator.rut || operator.id || auth.currentUser.uid,
-        activeOperatorName: operator.name
-      }, { merge: true });
+      await occupyModule(mod.id, operatorKey || auth.currentUser.uid, operator.name);
       setSelectedModule(mod);
-    } catch (err) {
-          // eslint-disable-next-line no-unused-vars
-          const e = err;
+    } catch (e) {
       console.error(e);
-      alert("Error al seleccionar módulo.");
+      alert('Error al seleccionar módulo.');
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-slate-50 text-slate-500">
-        <div className="animate-pulse flex flex-col items-center">
-          <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-          Cargando perfil...
-        </div>
-      </div>
-    );
-  }
+  if (loading) return <LoadingScreen label="Cargando tu perfil…" />;
 
+  // ---------- Sin perfil ----------
   if (!operator) {
     return (
-      <div className="min-h-screen bg-slate-50/50 flex flex-col font-sans">
-        <header className="bg-white border-b border-slate-200/80 px-8 py-3.5 shadow-sm sticky top-0 z-30">
-        <div className="max-w-[1720px] mx-auto flex items-center justify-between gap-6 flex-wrap xl:flex-nowrap">
-          <div className="flex items-center gap-3.5">
-            <img alt="Logo Hospital de Yumbel" className="w-11 h-11 rounded-full object-cover shadow-sm border border-slate-200" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAnlb_Qek0e-k-UYeE3t5ZspyVUV1JKd7q2PrDfISINdEgDiEAQxBazBDTZ6DbFQJtfEbM1BKTFNAmCOGk6DHHa-xyqFVD_B8wfVLt6NkAjYw9fXfSTtvzp9XAeEecdGvKAsEaO5DBhWugyKPaZOSulylIuVy3v20xOgzxz-oGJe9LcDcX4OCWe4RQfGosf53mUP9xGTVx3bpqn-Svo5N4IxP4oRihjGMmBmAaQIwvYq-yoEh5PjPHju8XJW45ZSdSTJREWFSNN9KjjzPk" />
-            <div>
-              <h1 className="text-base font-bold text-slate-900 leading-tight">Hospital de Yumbel</h1>
-              <p className="text-[11px] tracking-wider font-semibold text-slate-400 uppercase">Sistema de Atención y Espera</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-6">
-            <button onClick={onLogout} className="text-xs font-bold text-slate-500 hover:text-red-500 transition px-2 py-1">
-              Cerrar Sesión
-            </button>
-          </div>
+      <AreaContext.Provider value="operator">
+        <div className="ui-root min-h-screen bg-slate-50">
+          <AppHeader onLogout={onLogout} />
+          <main className="mx-auto max-w-md px-6 py-20">
+            <Card className="ui-fade-up p-8 text-center">
+              <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-amber-50 text-amber-600">
+                <UserX size={22} />
+              </span>
+              <h1 className="mt-5 text-lg font-semibold text-slate-900">No encontramos tu perfil</h1>
+              <p className="mt-2 text-sm text-slate-500">Tu cuenta no tiene un perfil de operador asociado. Contacta a Jefatura del SOME.</p>
+              <Button variant="secondary" className="mx-auto mt-6" onClick={onLogout}>
+                <LogOut size={16} />
+                Cerrar sesión
+              </Button>
+            </Card>
+          </main>
         </div>
-      </header>
-        <div className="p-10 text-center text-slate-500 font-bold">No se encontró tu perfil de usuario. Contacta al administrador.</div>
-      </div>
+      </AreaContext.Provider>
     );
   }
 
+  const firstName = (operator.name || '').split(' ')[0];
+
+  // ---------- Selección de módulo ----------
   if (!selectedModule) {
+    const myModule = FIXED_MODULES.find((m) => modulesStatus[m.id]?.activeOperatorId === operatorKey);
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
-        <header className="bg-white border-b border-slate-200/80 px-8 py-3.5 shadow-sm sticky top-0 z-30">
-        <div className="max-w-[1720px] mx-auto flex items-center justify-between gap-6 flex-wrap xl:flex-nowrap">
-          <div className="flex items-center gap-3.5">
-            <img alt="Logo Hospital de Yumbel" className="w-11 h-11 rounded-full object-cover shadow-sm border border-slate-200" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAnlb_Qek0e-k-UYeE3t5ZspyVUV1JKd7q2PrDfISINdEgDiEAQxBazBDTZ6DbFQJtfEbM1BKTFNAmCOGk6DHHa-xyqFVD_B8wfVLt6NkAjYw9fXfSTtvzp9XAeEecdGvKAsEaO5DBhWugyKPaZOSulylIuVy3v20xOgzxz-oGJe9LcDcX4OCWe4RQfGosf53mUP9xGTVx3bpqn-Svo5N4IxP4oRihjGMmBmAaQIwvYq-yoEh5PjPHju8XJW45ZSdSTJREWFSNN9KjjzPk" />
-            <div>
-              <h1 className="text-base font-bold text-slate-900 leading-tight">Hospital de Yumbel</h1>
-              <p className="text-[11px] tracking-wider font-semibold text-slate-400 uppercase">Sistema de Atención y Espera</p>
+      <AreaContext.Provider value="operator">
+        <div className="ui-root min-h-screen bg-slate-50">
+          <AppHeader user={{ name: operator.name, detail: 'Sin módulo asignado' }} onLogout={handleLogoutAction} />
+          <main className="ui-fade-up mx-auto max-w-5xl px-6 py-14">
+            <div className="text-center">
+              <p className={`text-xs font-semibold uppercase tracking-[0.16em] ${OPERATOR.eyebrow}`}>Inicio de jornada</p>
+              <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">¿En qué módulo atenderás hoy?</h1>
+              <p className="mt-2 text-[15px] text-slate-500">Hola, {firstName}. Elige tu módulo para comenzar a llamar turnos.</p>
             </div>
-          </div>
-          <div className="flex items-center gap-6">
-            <button onClick={handleLogoutAction} className="text-xs font-bold text-slate-500 hover:text-red-500 transition px-2 py-1">
-              Cerrar Sesión
-            </button>
-          </div>
+            <div className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+              {FIXED_MODULES.map((mod) => (
+                <ModuleOption
+                  key={mod.id}
+                  mod={mod}
+                  status={modulesStatus[mod.id]}
+                  isMine={modulesStatus[mod.id]?.activeOperatorId === operatorKey}
+                  blocked={!!myModule && myModule.id !== mod.id}
+                  onSelect={handleSelectModule}
+                />
+              ))}
+            </div>
+            <p className="mt-10 text-center text-[13px] text-slate-400">
+              Los módulos ocupados se liberan cuando su operador cierra sesión o desde Administración.
+            </p>
+          </main>
         </div>
-      </header>
+      </AreaContext.Provider>
+    );
+  }
 
-        <main className="admin-dashboard fade-in" style={{flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 20px'}}>
-          <div className="admin-card glass" style={{maxWidth: 800, width: '100%', textAlign: 'center', padding: '40px 20px'}}>
-            <LayoutGrid size={48} style={{opacity: 0.2, margin: '0 auto 20px auto'}} />
-            <h2 style={{marginBottom: 30, color: '#334155', fontSize: '1.5rem', fontWeight: 900}}>¿En qué módulo atenderás hoy?</h2>
-            
-            <div style={{display: 'flex', gap: 15, flexWrap: 'wrap', justifyContent: 'center'}}>
-              {FIXED_MODULES.map(mod => {
-                const status = modulesStatus[mod.id];
-                const operatorRut = operator.rut || operator.id || auth.currentUser.uid;
-                const myOccupiedModule = FIXED_MODULES.find(m => modulesStatus[m.id]?.activeOperatorId === operatorRut);
-                
-                const isOccupiedByMe = status && status.activeOperatorId === operatorRut;
-                const isOccupiedByOther = status && status.activeOperatorId && !isOccupiedByMe;
-                
-                let isDisabled = false;
-                let statusText = 'Disponible';
-                let isGhost = false;
+  // ---------- Panel de atención ----------
+  const audioOn = !!globalQueue.audioEnabled;
+  const language = globalQueue.audioLanguage || 'es';
+  const controlsProps = {
+    module: selectedModule,
+    operatorName: operator.name,
+    turnLabel: formatTurn(moduleState.letter, moduleState.number),
+    globalLabel: formatTurn(globalQueue.globalTurnLetter, globalQueue.globalTurnNumber),
+    audioOn,
+    coolingDown: isCoolingDown,
+    onNext: advanceTurn,
+    onRepeat: repeatAudio,
+    onPip: 'documentPictureInPicture' in window ? openPip : null,
+  };
 
-                if (myOccupiedModule) {
-                  if (isOccupiedByMe) {
-                    isDisabled = false;
-                    statusText = 'Tu Módulo Actual';
-                    isGhost = false;
-                  } else {
-                    isDisabled = true;
-                    statusText = isOccupiedByOther ? `Ocupado por ${status.activeOperatorName}` : 'Debes salir de tu módulo actual';
-                    isGhost = true;
-                  }
-                } else {
-                  if (isOccupiedByOther) {
-                    isDisabled = true;
-                    statusText = `Ocupado por ${status.activeOperatorName}`;
-                    isGhost = true;
-                  }
-                }
+  return (
+    <AreaContext.Provider value="operator">
+      <div className="ui-root min-h-screen bg-slate-50">
+        <AppHeader user={{ name: operator.name, detail: selectedModule.name }} onLogout={handleLogoutAction} />
+        <main className="ui-fade-up mx-auto max-w-[1440px] px-6 py-8 lg:px-8">
+          <div className="mb-6">
+            <p className={`text-xs font-semibold uppercase tracking-[0.16em] ${OPERATOR.eyebrow}`}>Panel de atención</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">Hola, {firstName}</h1>
+            <p className="mt-1 text-sm text-slate-500">Estás atendiendo en el {selectedModule.name}. Llama a cada paciente en orden.</p>
+          </div>
 
-                return (
-                  <button 
-                    key={mod.id} 
-                    onClick={() => !isDisabled && handleSelectModule(mod)}
-                    className={`btn ${isGhost ? 'ghost' : 'primary push-btn active-press'}`}
-                    style={{
-                      padding: '20px 40px', 
-                      fontSize: '1.2rem', 
-                      display: 'flex', 
-                      flexDirection: 'column', 
-                      alignItems: 'center',
-                      opacity: isDisabled ? 0.6 : 1,
-                      cursor: isDisabled ? 'not-allowed' : 'pointer',
-                      border: isOccupiedByMe ? '2px solid var(--accent-color)' : 'none',
-                      minWidth: '180px'
-                    }}
-                    disabled={isDisabled}
-                  >
-                    <span style={{fontSize: '2rem', fontWeight: 'bold'}}>{mod.letter}</span>
-                    <span style={{fontSize: '0.9rem', opacity: 0.9, marginTop: '4px'}}>{mod.name}</span>
-                    <span style={{
-                      fontSize: '0.75rem', 
-                      marginTop: 10, 
-                      background: isOccupiedByMe ? '#d1fae5' : 'rgba(0,0,0,0.05)', 
-                      color: isOccupiedByMe ? '#047857' : 'inherit',
-                      padding: '4px 10px', 
-                      borderRadius: 12,
-                      fontWeight: 'bold'
-                    }}>{statusText}</span>
-                  </button>
-                );
-              })}
+          <div className="grid items-start gap-6 lg:grid-cols-12">
+            <div className="lg:col-span-7">
+              {pipWindow ? (
+                <Card className="px-8 py-16 text-center">
+                  <span className={`mx-auto grid h-14 w-14 place-items-center rounded-2xl ${OPERATOR.iconSoft}`}>
+                    <PictureInPicture2 size={26} />
+                  </span>
+                  <h2 className="mt-5 text-lg font-semibold text-slate-900">Modo compacto activo</h2>
+                  <p className="mx-auto mt-2 max-w-sm text-sm text-slate-500">
+                    Los controles de llamado están en la ventana flotante. Puedes seguir trabajando en otras aplicaciones.
+                  </p>
+                  <Button variant="soft" size="lg" className="mx-auto mt-6" onClick={() => pipWindow.close()}>
+                    Volver a mostrar aquí
+                  </Button>
+                  {createPortal(<TurnControls compact {...controlsProps} />, pipWindow.document.getElementById('pip-root'))}
+                </Card>
+              ) : (
+                <TurnControls {...controlsProps} />
+              )}
             </div>
+
+            <aside className="space-y-4 lg:col-span-5">
+              <div className="flex flex-wrap items-baseline gap-x-2 px-1">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Opciones globales</p>
+                <p className="text-xs text-slate-400">Afectan a todos los módulos</p>
+              </div>
+              <ManualTurnCard currentLetter={globalQueue.globalTurnLetter} currentNumber={globalQueue.globalTurnNumber} />
+              <Card>
+                <CardHeader
+                  icon={audioOn ? Volume2 : VolumeX}
+                  title="Anuncio por voz"
+                  description="Lee cada llamado en la pantalla de la sala."
+                  action={<Toggle checked={audioOn} onChange={() => updateConfig({ audioEnabled: !audioOn })} label="Activar o desactivar la voz" />}
+                />
+                <div className="px-6 pb-6 pt-5">
+                  <Label>Idioma de la voz</Label>
+                  <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
+                    {LANGUAGES.map(([code, label]) => (
+                      <button
+                        key={code}
+                        type="button"
+                        aria-pressed={language === code}
+                        onClick={() => updateConfig({ audioLanguage: code })}
+                        className={`h-9 rounded-lg text-sm font-semibold transition ${language === code ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-900/5' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </Card>
+            </aside>
           </div>
         </main>
       </div>
+    </AreaContext.Provider>
+  );
+}
+
+// Tarjeta de un módulo en la pantalla de selección
+function ModuleOption({ mod, status, isMine, blocked, onSelect }) {
+  const busyByOther = !!status?.activeOperatorId && !isMine;
+  const disabled = busyByOther || blocked;
+  let badge = <Badge tone="success" dot>Disponible</Badge>;
+  if (isMine) badge = <Badge tone="info" dot>Tu módulo actual</Badge>;
+  else if (busyByOther) badge = <Badge tone="neutral">Ocupado</Badge>;
+  else if (blocked) badge = <Badge tone="neutral">No disponible</Badge>;
+
+  return (
+    <button
+      type="button"
+      aria-label={mod.name}
+      disabled={disabled}
+      onClick={() => onSelect(mod)}
+      className={`group flex flex-col items-center rounded-2xl border bg-white px-4 py-7 text-center shadow-card transition duration-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-indigo-500/20 ${
+        disabled ? 'border-slate-200/80 opacity-60' : 'border-slate-200/80 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-lg hover:shadow-indigo-600/10'
+      } ${isMine ? 'border-indigo-300 ring-4 ring-indigo-500/10' : ''}`}
+    >
+      <span className={`grid h-16 w-16 place-items-center rounded-2xl font-display text-3xl font-bold transition ${disabled ? 'bg-slate-100 text-slate-400' : OPERATOR.tile}`}>
+        {mod.letter}
+      </span>
+      <span className="mt-4 text-[15px] font-semibold text-slate-900">{mod.name}</span>
+      <span className="mt-2">{badge}</span>
+      <span className="mt-2 h-4 max-w-full truncate text-xs text-slate-500">{busyByOther ? status.activeOperatorName : ''}</span>
+    </button>
+  );
+}
+
+// Controles de llamado. compact = ventana flotante (320×480).
+function TurnControls({ compact = false, module, operatorName, turnLabel, globalLabel, audioOn, coolingDown, onNext, onRepeat, onPip }) {
+  const area = useArea();
+
+  const nextButton = (
+    <Button size={compact ? 'lg' : 'xl'} block onClick={onNext} disabled={coolingDown}>
+      {coolingDown ? <LoaderCircle size={20} className="animate-spin" /> : null}
+      {coolingDown ? (audioOn ? 'Anunciando en sala…' : 'Mostrando en sala…') : 'Siguiente turno'}
+      {coolingDown ? null : <ArrowRight size={compact ? 18 : 22} />}
+    </Button>
+  );
+  const repeatButton = (
+    <Button variant="secondary" size={compact ? 'md' : 'lg'} block onClick={onRepeat} disabled={!audioOn || coolingDown}>
+      <Repeat size={compact ? 16 : 18} />
+      Repetir llamado
+    </Button>
+  );
+
+  if (compact) {
+    return (
+      <div className="ui-root flex min-h-screen flex-col bg-white">
+        <div className={`h-1 ${area.accentLine}`} />
+        <div className="flex flex-1 flex-col gap-4 p-5">
+          <div className="flex items-center gap-2.5">
+            <span className={`grid h-8 w-8 place-items-center rounded-lg font-display text-base font-bold ${area.tile}`}>{module.letter}</span>
+            <div className="min-w-0 leading-tight">
+              <p className="text-sm font-semibold text-slate-900">{module.name}</p>
+              <p className="truncate text-xs text-slate-500">{operatorName}</p>
+            </div>
+          </div>
+          <div className={`flex flex-1 flex-col items-center justify-center rounded-2xl border border-slate-100 py-6 ${area.wash}`}>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Turno actual</p>
+            <p className={`mt-2 font-display text-6xl font-bold leading-none tracking-tight ${area.gradientText}`}>{turnLabel}</p>
+            <p className="mt-3 text-xs text-slate-500">
+              Fila global <span className="font-display font-semibold text-slate-800">{globalLabel}</span>
+            </p>
+          </div>
+          {nextButton}
+          {repeatButton}
+        </div>
+      </div>
     );
   }
 
-  const controlsContent = (
-    <div className={`bg-white ${pipWindow ? 'min-h-screen p-6' : 'rounded-3xl p-6 shadow-xs border border-slate-200/70'} flex flex-col`}>
-      <div className="flex justify-between items-center mb-6">
-        <div className="flex items-center gap-3">
-          <span className="bg-blue-100 text-blue-800 py-1 px-3 rounded-full text-xs font-bold tracking-wider">
-            {selectedModule.name.toUpperCase()}
-          </span>
-          <span className="text-sm font-semibold text-slate-600">{operator.name}</span>
-        </div>
-      </div>
-      
-      <div className="flex flex-col items-center justify-center bg-slate-50 rounded-2xl p-6 mb-6 border border-slate-100">
-        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Turno Actual en Módulo</span>
-        <div className="flex items-center text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600">
-          <span>{moduleState.letter}</span>
-          <span className="mx-2 text-slate-300">-</span>
-          <span>{Math.max(0, moduleState.number).toString().padStart(2, '0')}</span>
-        </div>
-        <div className="mt-4 bg-white px-4 py-2 rounded-full border border-slate-200 text-sm font-bold text-slate-600">
-          Fila Global: <span className="text-slate-900">{globalQueue.globalTurnLetter || 'A'}-{(globalQueue.globalTurnNumber !== undefined ? globalQueue.globalTurnNumber : 0).toString().padStart(2, '0')}</span>
-        </div>
-      </div>
-      
-      <div className="flex flex-col gap-3">
-        <button 
-          className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-black text-lg py-4 px-6 rounded-2xl transition disabled:opacity-50 disabled:cursor-not-allowed shadow-md flex items-center justify-center gap-3"
-          onClick={advanceTurn} 
-          disabled={(isCoolingDown && globalQueue.audioEnabled)}
-        >
-          SIGUIENTE TURNO <ArrowRight size={24} />
-        </button>
-
-        <button 
-          className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-4 px-6 rounded-2xl transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          onClick={repeatAudio}
-          disabled={!globalQueue.audioEnabled || isCoolingDown}
-        >
-          <Repeat size={20} />
-          {isCoolingDown ? 'Reproduciendo...' : 'Repetir Llamado'}
-        </button>
-      </div>
-    </div>
-  );
-
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
-      <header className="bg-white border-b border-slate-200/80 px-8 py-3.5 shadow-sm sticky top-0 z-30">
-        <div className="max-w-[1720px] mx-auto flex items-center justify-between gap-6 flex-wrap xl:flex-nowrap">
-          <div className="flex items-center gap-3.5">
-            <img alt="Logo Hospital de Yumbel" className="w-11 h-11 rounded-full object-cover shadow-sm border border-slate-200" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAnlb_Qek0e-k-UYeE3t5ZspyVUV1JKd7q2PrDfISINdEgDiEAQxBazBDTZ6DbFQJtfEbM1BKTFNAmCOGk6DHHa-xyqFVD_B8wfVLt6NkAjYw9fXfSTtvzp9XAeEecdGvKAsEaO5DBhWugyKPaZOSulylIuVy3v20xOgzxz-oGJe9LcDcX4OCWe4RQfGosf53mUP9xGTVx3bpqn-Svo5N4IxP4oRihjGMmBmAaQIwvYq-yoEh5PjPHju8XJW45ZSdSTJREWFSNN9KjjzPk" />
-            <div>
-              <h1 className="text-base font-bold text-slate-900 leading-tight">Hospital de Yumbel</h1>
-              <p className="text-[11px] tracking-wider font-semibold text-slate-400 uppercase">Sistema de Atención y Espera</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-6">
-            <button onClick={handleLogoutAction} className="text-xs font-bold text-slate-500 hover:text-red-500 transition px-2 py-1">
-              Cerrar Sesión
-            </button>
-            <div className="flex items-center gap-4 bg-slate-50 border border-slate-200/80 rounded-2xl px-4 py-1.5 shadow-xs">
-              <div className="flex flex-col text-right">
-                <span className="text-xs font-bold text-slate-700 tracking-tight leading-tight">{liveDate}</span>
-              </div>
-              <div className="h-7 w-px bg-slate-200"></div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-xl font-extrabold text-slate-800 tracking-tight font-mono tabular-nums leading-none">{liveTime}</span>
-                <span className="text-[11px] font-bold text-teal-700 tracking-wider">HRS</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-4 bg-slate-50 border border-slate-200/80 rounded-2xl px-4 py-1.5 shadow-xs">
-              <span className="text-xs font-bold text-slate-700">{operator.name}</span>
-              <div className="h-7 w-px bg-slate-200"></div>
-              <span className="text-xs font-black text-blue-600">{selectedModule.name.toUpperCase()}</span>
-            </div>
+    <Card className="overflow-hidden">
+      <div className="flex items-center justify-between gap-4 border-b border-slate-100 px-6 py-4">
+        <div className="flex items-center gap-3">
+          <span className={`grid h-10 w-10 place-items-center rounded-xl font-display text-lg font-bold ${area.tile}`}>{module.letter}</span>
+          <div className="leading-tight">
+            <p className="text-[15px] font-semibold text-slate-900">{module.name}</p>
+            <p className="text-[13px] text-slate-500">{operatorName}</p>
           </div>
         </div>
-      </header>
+        <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-[13px] font-medium text-slate-600">
+          Fila global
+          <span className="font-display font-semibold text-slate-900">{globalLabel}</span>
+        </span>
+      </div>
 
-      <main className="max-w-[1720px] mx-auto w-full px-8 py-7 flex-1">
-        {pipWindow ? (
-          <div className="bg-white rounded-3xl p-10 shadow-xs border border-slate-200/70 flex flex-col items-center justify-center text-center max-w-2xl mx-auto mt-10">
-            <PictureInPicture size={48} className="text-purple-500 mb-6" />
-            <h3 className="text-2xl font-black text-slate-800 mb-4">Modo Compacto Activo</h3>
-            <p className="text-slate-500 mb-8 font-medium">Los controles de turno están actualmente en la ventana flotante pequeña.</p>
-            <button className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-bold py-3 px-6 rounded-xl transition shadow-sm" onClick={() => pipWindow.close()}>
-              Regresar Controles Aquí
-            </button>
-            {createPortal(controlsContent, pipWindow.document.getElementById('pip-root'))}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 items-start">
-            
-            {/* LEFT COLUMN: MAIN CONTROLS */}
-            <section className="w-full flex flex-col gap-4">
-              <div className="flex items-center gap-2 px-1">
-                <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                </svg>
-                <h2 className="text-lg font-extrabold text-slate-800">Panel de Control</h2>
-                <span className="text-slate-400 text-xs font-medium">• Controles principales del turno</span>
-              </div>
-              
-              {controlsContent}
-              
-              {('documentPictureInPicture' in window) && (
-                <button 
-                  className="mt-4 bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-700 hover:to-slate-800 text-white font-black py-5 px-6 rounded-3xl transition shadow-md flex items-center justify-center gap-3 w-full border border-slate-700 text-lg uppercase tracking-wide" 
-                  onClick={openPip}
-                >
-                  <PictureInPicture size={24} className="text-purple-400" /> ABRIR MODO COMPACTO
-                </button>
-              )}
-            </section>
+      <div className={`px-6 py-10 text-center ${area.wash}`}>
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Turno actual</p>
+        <p className={`mt-3 font-display text-[104px] font-bold leading-none tracking-tight ${area.gradientText}`}>{turnLabel}</p>
+        <p className="mt-4 text-[13px] text-slate-500">
+          {audioOn ? 'Cada llamado se anuncia por voz en la sala de espera.' : 'La voz está desactivada: el llamado solo se muestra en pantalla.'}
+        </p>
+      </div>
 
-            {/* RIGHT COLUMN: GLOBAL SETTINGS */}
-            <section className="w-full flex flex-col gap-4">
-              <div className="flex items-center gap-2 px-1">
-                <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                </svg>
-                <h2 className="text-lg font-extrabold text-slate-800">Opciones Globales</h2>
-                <span className="text-slate-400 text-xs font-medium">• Configuración para todos los módulos</span>
-              </div>
-              
-              <div className="flex flex-col gap-5">
-                {/* Ajuste Manual */}
-                <article className="bg-white rounded-3xl p-6 shadow-xs border border-slate-200/70 flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <svg className="w-4 h-4 text-slate-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path>
-                    </svg>
-                    <h3 className="font-bold text-slate-900 text-base">Ajuste Manual</h3>
-                  </div>
-                  <p className="text-xs text-slate-500 mb-6 leading-relaxed">Modifica el turno de la fila si ocurrió un salto.</p>
-
-                  <div className="bg-[#f1f6fe] rounded-2xl p-4 flex items-center justify-between mb-6 border border-blue-100">
-                    <div className="flex items-center gap-2 text-xs font-bold text-blue-900 tracking-wider">
-                      <span className="w-3 h-3 rounded-full bg-blue-600"></span>
-                      EN SALA
-                    </div>
-                    <div className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600 tracking-wider">
-                      {(globalQueue.globalTurnLetter || 'A')}-{(globalQueue.globalTurnNumber !== undefined ? globalQueue.globalTurnNumber : 0).toString().padStart(2, '0')}
-                    </div>
-                  </div>
-
-                  <div className="mb-6">
-                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2.5">Próximo Turno:</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="relative border border-slate-200 rounded-2xl p-3 flex flex-col items-center justify-center bg-white shadow-xs focus-within:ring-2 focus-within:ring-blue-100 focus-within:border-blue-500 transition">
-                        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-tight flex items-center gap-1 z-10 pointer-events-none">
-                          <span className="text-[10px]">T</span> LETRA
-                        </span>
-                        <select 
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                          value={manualTurn.letter}
-                          onChange={(e) => setManualTurn({ ...manualTurn, letter: e.target.value })}
-                        >
-                          {'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(letter => (
-                            <option key={letter} value={letter}>{letter}</option>
-                          ))}
-                        </select>
-                        <span className="text-2xl font-black text-blue-600 mt-1 pointer-events-none">{manualTurn.letter}</span>
-                      </div>
-                      
-                      <div className="relative border border-slate-200 rounded-2xl p-3 flex flex-col items-center justify-center bg-white shadow-xs focus-within:ring-2 focus-within:ring-blue-100 focus-within:border-blue-500 transition">
-                        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-tight flex items-center gap-1 z-10 pointer-events-none">
-                          <span className="text-[10px]">#</span> NÚMERO
-                        </span>
-                        <input 
-                          type="number"
-                          min="0" max="99"
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-text"
-                          value={manualTurn.number}
-                          onChange={(e) => {
-                              let val = e.target.value.replace(/[^0-9]/g, '');
-                              if (val.length > 2) val = val.slice(0, 2);
-                              setManualTurn({ ...manualTurn, number: val });
-                            }} 
-                        />
-                        <span className="text-2xl font-black text-blue-600 mt-1 pointer-events-none">{manualTurn.number}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <button 
-                  onClick={handleSetTurn}
-                  className="w-full bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-700 hover:to-slate-800 text-white font-bold text-xs py-3.5 px-4 rounded-xl transition duration-150 active:scale-[0.99] text-center shadow-sm"
-                >
-                  Fijar Turno
-                </button>
-              </article>
-
-                {/* Configuraciones Adicionales (Audio/Idioma) */}
-                <article className="bg-white rounded-3xl p-6 shadow-xs border border-slate-200/70">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      {globalQueue.audioEnabled ? <Volume2 className="text-slate-700 w-4 h-4"/> : <VolumeX className="text-slate-700 w-4 h-4"/>}
-                      <h3 className="font-bold text-slate-900 text-base">Audio del Sistema</h3>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input type="checkbox" className="sr-only peer" checked={globalQueue.audioEnabled} onChange={toggleAudio}/>
-                      <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                    </label>
-                  </div>
-                  
-                  <div className="h-px bg-slate-100 my-4"></div>
-                  
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      <Globe className="text-slate-700 w-4 h-4" />
-                      <h3 className="font-bold text-slate-900 text-base">Idioma de Voz</h3>
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className={`cursor-pointer border rounded-xl p-3 flex flex-col items-center justify-center transition ${globalQueue.audioLanguage === 'en' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
-                      <input type="radio" name="language" checked={globalQueue.audioLanguage === 'en'} onChange={() => setLanguage('en')} className="hidden"/>
-                      <span className="font-bold text-sm">Inglés</span>
-                    </label>
-                    <label className={`cursor-pointer border rounded-xl p-3 flex flex-col items-center justify-center transition ${(!globalQueue.audioLanguage || globalQueue.audioLanguage === 'es') ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
-                      <input type="radio" name="language" checked={!globalQueue.audioLanguage || globalQueue.audioLanguage === 'es'} onChange={() => setLanguage('es')} className="hidden"/>
-                      <span className="font-bold text-sm">Español</span>
-                    </label>
-                  </div>
-                </article>
-              </div>
-            </section>
-          </div>
-        )}
-      </main>
-    </div>
+      <div className="space-y-3 border-t border-slate-100 px-6 py-6">
+        {nextButton}
+        <div className={`grid gap-3 ${onPip ? 'grid-cols-2' : 'grid-cols-1'}`}>
+          {repeatButton}
+          {onPip && (
+            <Button variant="secondary" size="lg" block onClick={onPip}>
+              <PictureInPicture2 size={18} />
+              Modo compacto
+            </Button>
+          )}
+        </div>
+      </div>
+    </Card>
   );
 }

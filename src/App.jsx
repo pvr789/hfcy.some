@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
@@ -10,10 +10,8 @@ import LoginSuper from './components/LoginSuper';
 import SuperAdmin from './components/SuperAdmin';
 import ClientAdmin from './components/ClientAdmin';
 import Home from './components/Home';
-
-// ¡IMPORTANTE! Cambia esto por tu RUT de administrador (se usa con el dominio interno)
-
-const SUPER_ADMIN_EMAIL = '17471333-2@some.cl';
+import LoadingScreen from './components/ui/LoadingScreen';
+import { SUPER_ADMIN_EMAIL } from './lib/constants';
 
 function DashboardRouter() {
   const [user, setUser] = useState(null);
@@ -108,13 +106,10 @@ function DashboardRouter() {
     };
   }, [navigate]);
 
-  
-  const handleLogout = () => {
-    signOut(auth);
-  };
+  const handleLogout = useCallback(() => signOut(auth), []);
 
   if (loading) {
-    return <div style={{display:'flex', justifyContent:'center', alignItems:'center', height:'100vh', color:'white'}}>Cargando...</div>;
+    return <LoadingScreen />;
   }
 
   if (!user) return null;
