@@ -6,11 +6,14 @@ import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword } f
 import { Check, IdCard, LayoutGrid, ListOrdered, Lock, LogOut, MonitorCheck, Pencil, Trash2, User, UserPlus, Users, X } from 'lucide-react';
 import { FIXED_MODULES } from '../lib/constants';
 import { formatRut, formatRutDisplay, formatTurn, nextTurn, rutToEmail } from '../lib/utils';
-import { configRef, statusRef, occupyModule, freeModule } from '../lib/modules';
+import { configRef, statusRef, occupyModule, freeModule, freeAllModules } from '../lib/modules';
+import { describeSchedule } from '../lib/schedule';
 import { AreaContext } from '../lib/theme';
 import useModulesStatus from '../hooks/useModulesStatus';
+import useSystemStatus from '../hooks/useSystemStatus';
 import AppHeader from './AppHeader';
 import ManualTurnCard from './ManualTurnCard';
+import SystemSchedule from './SystemSchedule';
 import Button from './ui/Button';
 import Badge from './ui/Badge';
 import Alert from './ui/Alert';
@@ -35,6 +38,9 @@ const findUserModule = (modulesStatus, user) =>
 export default function SuperAdmin({ onLogout }) {
   const [users, setUsers] = useState([]);
   const modulesStatus = useModulesStatus();
+  const system = useSystemStatus();
+  const isSystemOpen = system.manualOpen; // interruptor de Jefatura
+  const closedBySchedule = system.loaded && system.manualOpen && !system.inSchedule;
 
   const [newUserRut, setNewUserRut] = useState('');
   const [newUserRutConfirm, setNewUserRutConfirm] = useState('');
@@ -43,7 +49,6 @@ export default function SuperAdmin({ onLogout }) {
   const [newUserPasswordConfirm, setNewUserPasswordConfirm] = useState('');
 
   const [loading, setLoading] = useState(false);
-  const [isSystemOpen, setIsSystemOpen] = useState(true);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
 
@@ -54,12 +59,11 @@ export default function SuperAdmin({ onLogout }) {
   const [editIsActive, setEditIsActive] = useState(true);
   const [editModuleId, setEditModuleId] = useState('none');
 
+  // A la hora de cierre (o si el panel se abre ya fuera de horario) se liberan los módulos ocupados,
+  // igual que con el cierre manual. Los operadores conectados además se desconectan solos.
   useEffect(() => {
-    const unsub = onSnapshot(statusRef(), (docSnap) => {
-      setIsSystemOpen(docSnap.exists() ? docSnap.data().isOpen !== false : true);
-    });
-    return () => unsub();
-  }, []);
+    if (closedBySchedule) freeAllModules().catch((err) => console.error(err));
+  }, [closedBySchedule]);
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'users'), (snap) => {
@@ -103,16 +107,20 @@ export default function SuperAdmin({ onLogout }) {
 
   const handleToggleSystemStatus = async () => {
     const newState = !isSystemOpen;
-    if (!window.confirm(`¿Estás seguro de que deseas ${newState ? 'ABRIR' : 'CERRAR'} el sistema?\n\nSi lo cierras, todos los operadores serán desconectados inmediatamente.`)) return;
+    const { schedule } = system;
+    let text = `¿Estás seguro de que deseas ${newState ? 'ABRIR' : 'CERRAR'} el sistema?`;
+    if (!newState) {
+      text += '\n\nSi lo cierras, todos los operadores serán desconectados inmediatamente.';
+      if (schedule.enabled) text += '\nMientras esté cerrado, el horario no lo abrirá: tendrás que volver a abrirlo con este interruptor.';
+    } else if (schedule.enabled && !system.inSchedule) {
+      text += `\n\nAhora está fuera de horario: los operadores podrán ingresar a partir de las ${schedule.open}.`;
+    }
+    if (!window.confirm(text)) return;
 
     try {
       await setDoc(statusRef(), { isOpen: newState }, { merge: true });
-      if (!newState) {
-        // Libera todos los módulos que tengan un operador asignado
-        await Promise.all(
-          FIXED_MODULES.filter((m) => modulesStatus[m.id]?.activeOperatorId).map((m) => freeModule(m.id))
-        );
-      }
+      // Al cerrar, libera todos los módulos que tengan un operador asignado
+      if (!newState) await freeAllModules();
       notify(`Sistema ${newState ? 'abierto' : 'cerrado'}.`);
     } catch (err) {
       console.error(err);
@@ -297,11 +305,13 @@ export default function SuperAdmin({ onLogout }) {
   return (
     <AreaContext.Provider value="admin">
       <div className="ui-root flex min-h-screen flex-col bg-slate-50">
-        {/* Franja negra: cabecera, título y resumen */}
+        {/* La cabecera va fuera de la franja negra para que quede fija al hacer scroll */}
+        <AppHeader onLogout={onLogout}>
+          <SystemSwitch isOpen={isSystemOpen} outOfHours={closedBySchedule} onToggle={handleToggleSystemStatus} />
+        </AppHeader>
+
+        {/* Franja negra: título y resumen */}
         <div className="bg-slate-950">
-          <AppHeader onLogout={onLogout}>
-            <SystemSwitch isOpen={isSystemOpen} onToggle={handleToggleSystemStatus} />
-          </AppHeader>
           <div className="relative mx-auto max-w-[1440px] px-6 pb-8 pt-6 lg:px-8">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Jefatura · SOME</p>
             <h1 className="mt-1.5 text-2xl font-semibold tracking-tight text-white">Panel de administración</h1>
@@ -318,12 +328,17 @@ export default function SuperAdmin({ onLogout }) {
           {!isSystemOpen && (
             <Alert tone="warning">El sistema está cerrado: los operadores no pueden ingresar hasta que lo vuelvas a abrir.</Alert>
           )}
+          {closedBySchedule && (
+            <Alert tone="warning">
+              Fuera de horario: el sistema atiende {describeSchedule(system.schedule)}. Los operadores podrán ingresar a partir de las {system.schedule.open}.
+            </Alert>
+          )}
           {(error || success) && <Alert tone={error ? 'error' : 'success'}>{error || success}</Alert>}
 
           {/* Atención */}
           <section>
             <SectionHeading title="Atención" description="Estado de los módulos y ajuste de la fila." />
-            <div className="grid items-start gap-6 lg:grid-cols-12">
+            <div className="grid gap-6 lg:grid-cols-12">
               <Card className="overflow-hidden lg:col-span-7">
                 <CardHeader icon={MonitorCheck} title="Módulos de atención" description="Quién está atendiendo en cada módulo." action={<Badge tone={busyCount ? 'success' : 'neutral'} dot>{busyCount} en atención</Badge>} />
                 <ul className="mt-4 divide-y divide-slate-100 border-t border-slate-100">
@@ -332,17 +347,20 @@ export default function SuperAdmin({ onLogout }) {
                   ))}
                 </ul>
               </Card>
-              <ManualTurnCard className="lg:col-span-5" currentLetter={globalTurn.letter} currentNumber={globalTurn.number} />
+              <ManualTurnCard className="lg:col-span-5" currentLetter={globalTurn.letter} currentNumber={globalTurn.number}>
+                <SystemSchedule schedule={system.schedule} />
+              </ManualTurnCard>
             </div>
           </section>
 
           {/* Personal */}
           <section>
             <SectionHeading title="Personal" description="Cuentas de los operadores del SOME." />
-            <div className="grid items-start gap-6 lg:grid-cols-12">
-              <Card className="lg:col-span-5">
+            <div className="grid gap-6 lg:grid-cols-12">
+              {/* Misma altura que la lista de operadores: los campos se reparten y el botón queda abajo */}
+              <Card className="flex flex-col lg:col-span-5">
                 <CardHeader icon={UserPlus} title="Nuevo operador" description="Si el RUT ya existe, solo se actualiza el nombre." />
-                <form className="space-y-4 px-6 pb-6 pt-5" onSubmit={handleCreateUser}>
+                <form className="flex flex-1 flex-col justify-between gap-4 px-6 pb-6 pt-5" onSubmit={handleCreateUser}>
                   <div>
                     <Label htmlFor="nu-name">Nombre completo</Label>
                     <Input id="nu-name" icon={User} required value={newUserName} onChange={(e) => setNewUserName(e.target.value)} placeholder="Ej. Daniela Pérez" />
@@ -367,7 +385,7 @@ export default function SuperAdmin({ onLogout }) {
                       <Input id="nu-pass2" type="password" value={newUserPasswordConfirm} onChange={(e) => setNewUserPasswordConfirm(e.target.value)} autoComplete="new-password" />
                     </div>
                   </div>
-                  <Button type="submit" size="lg" block disabled={loading} className="!mt-6">
+                  <Button type="submit" size="lg" block disabled={loading} className="mt-2">
                     <UserPlus size={18} />
                     {loading ? 'Procesando…' : 'Guardar operador'}
                   </Button>
@@ -455,14 +473,22 @@ export default function SuperAdmin({ onLogout }) {
 
 // ---------- Piezas del panel ----------
 
-function SystemSwitch({ isOpen, onToggle }) {
+// Interruptor de Jefatura. Encendido pero fuera del horario: "Fuera de horario" en ámbar.
+const SWITCH_STATES = {
+  open: { text: 'Sistema abierto', dot: 'bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.25)]', tone: 'success' },
+  waiting: { text: 'Fuera de horario', dot: 'bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.25)]', tone: 'warning' },
+  closed: { text: 'Sistema cerrado', dot: 'bg-slate-500', tone: 'success' },
+};
+
+function SystemSwitch({ isOpen, outOfHours, onToggle }) {
+  const state = SWITCH_STATES[!isOpen ? 'closed' : outOfHours ? 'waiting' : 'open'];
   return (
     <div className="flex items-center gap-3 rounded-xl bg-white/5 py-1.5 pl-3 pr-2 ring-1 ring-inset ring-white/10">
       <span className="flex items-center gap-2 whitespace-nowrap text-[13px] font-medium text-white">
-        <span className={`h-2 w-2 rounded-full ${isOpen ? 'bg-emerald-400 shadow-[0_0_0_3px_rgba(52,211,153,0.25)]' : 'bg-slate-500'}`} />
-        {isOpen ? 'Sistema abierto' : 'Sistema cerrado'}
+        <span className={`h-2 w-2 rounded-full ${state.dot}`} />
+        {state.text}
       </span>
-      <Toggle checked={isOpen} onChange={onToggle} tone="success" dark label="Abrir o cerrar el sistema" />
+      <Toggle checked={isOpen} onChange={onToggle} tone={state.tone} dark label="Abrir o cerrar el sistema" />
     </div>
   );
 }

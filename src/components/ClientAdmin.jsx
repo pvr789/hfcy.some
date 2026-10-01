@@ -57,6 +57,10 @@ export default function ClientAdmin({ onLogout }) {
     });
   }, [selectedModule]);
 
+  // Si la sesión se cierra sin pasar por "Cerrar sesión" (cierre del sistema, por horario o cuenta
+  // inhabilitada), también se cierra la ventana del modo compacto para que no quede vacía.
+  useEffect(() => () => pipWindow?.close(), [pipWindow]);
+
   const operatorKey = operator ? (operator.rut || operator.id) : null;
 
   const startCooldown = () => {
@@ -251,10 +255,14 @@ export default function ClientAdmin({ onLogout }) {
             <p className="mt-1 text-sm text-slate-500">Estás atendiendo en el {selectedModule.name}. Llama a cada paciente en orden.</p>
           </div>
 
-          <div className="grid items-start gap-6 lg:grid-cols-12">
-            <div className="lg:col-span-7">
+          <div className="grid items-stretch gap-6 lg:grid-cols-12">
+            <div className="space-y-4 lg:col-span-7 flex flex-col">
+              <div className="flex flex-wrap items-baseline gap-x-2 px-1 shrink-0">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Control de turnos</p>
+                <p className="text-xs text-slate-400">Llamados de tu módulo</p>
+              </div>
               {pipWindow ? (
-                <Card className="px-8 py-16 text-center">
+                <Card className="px-8 py-16 text-center flex-1 flex flex-col justify-center">
                   <span className={`mx-auto grid h-14 w-14 place-items-center rounded-2xl ${OPERATOR.iconSoft}`}>
                     <PictureInPicture2 size={26} />
                   </span>
@@ -268,7 +276,9 @@ export default function ClientAdmin({ onLogout }) {
                   {createPortal(<TurnControls compact {...controlsProps} />, pipWindow.document.getElementById('pip-root'))}
                 </Card>
               ) : (
-                <TurnControls {...controlsProps} />
+                <div className="flex-1 flex flex-col min-h-0">
+                  <TurnControls {...controlsProps} />
+                </div>
               )}
             </div>
 
@@ -384,8 +394,8 @@ function TurnControls({ compact = false, module, operatorName, turnLabel, global
   }
 
   return (
-    <Card className="overflow-hidden">
-      <div className="flex items-center justify-between gap-4 border-b border-slate-100 px-6 py-4">
+    <Card className="overflow-hidden flex flex-col h-full flex-1">
+      <div className="flex items-center justify-between gap-4 border-b border-slate-100 px-6 py-4 shrink-0">
         <div className="flex items-center gap-3">
           <span className={`grid h-10 w-10 place-items-center rounded-xl font-display text-lg font-bold ${area.tile}`}>{module.letter}</span>
           <div className="leading-tight">
@@ -399,7 +409,7 @@ function TurnControls({ compact = false, module, operatorName, turnLabel, global
         </span>
       </div>
 
-      <div className={`px-6 py-10 text-center ${area.wash}`}>
+      <div className={`px-6 py-10 text-center flex-1 flex flex-col justify-center ${area.wash}`}>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Turno actual</p>
         <p className={`mt-3 font-display text-[104px] font-bold leading-none tracking-tight ${area.gradientText}`}>{turnLabel}</p>
         <p className="mt-4 text-[13px] text-slate-500">
@@ -407,7 +417,7 @@ function TurnControls({ compact = false, module, operatorName, turnLabel, global
         </p>
       </div>
 
-      <div className="space-y-3 border-t border-slate-100 px-6 py-6">
+      <div className="space-y-3 border-t border-slate-100 px-6 py-6 shrink-0">
         {nextButton}
         <div className={`grid gap-3 ${onPip ? 'grid-cols-2' : 'grid-cols-1'}`}>
           {repeatButton}

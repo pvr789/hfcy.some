@@ -1,9 +1,11 @@
 import { useArea } from '../../lib/theme';
 
-// Interruptor accesible. tone="success" lo pinta verde; dark lo adapta a fondos oscuros.
+const TONES = { success: 'bg-emerald-500', warning: 'bg-amber-400' };
+
+// Interruptor accesible. tone="success" lo pinta verde y "warning" ámbar; dark lo adapta a fondos oscuros.
 export default function Toggle({ checked, onChange, tone, dark = false, label, disabled = false }) {
   const area = useArea();
-  const on = tone === 'success' ? 'bg-emerald-500' : area.toggleOn;
+  const on = TONES[tone] || area.toggleOn;
   const off = dark ? 'bg-white/20' : 'bg-slate-300';
   return (
     <button

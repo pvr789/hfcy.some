@@ -11,7 +11,8 @@ import Button from './ui/Button';
 import Alert from './ui/Alert';
 
 // "Ajuste manual" compartido por Administración y Operadores: fija el PRÓXIMO turno de la fila global.
-export default function ManualTurnCard({ currentLetter, currentNumber, className = '' }) {
+// children: contenido extra al pie de la tarjeta (en Administración, el horario del sistema).
+export default function ManualTurnCard({ currentLetter, currentNumber, className = '', children }) {
   const area = useArea();
   const [letter, setLetter] = useState('A');
   const [number, setNumber] = useState('');
@@ -43,39 +44,42 @@ export default function ManualTurnCard({ currentLetter, currentNumber, className
   };
 
   return (
-    <Card className={className}>
+    <Card className={`flex flex-col ${className}`}>
       <CardHeader icon={SlidersHorizontal} title="Ajuste manual" description="Corrige la fila si se produjo un salto de números." />
-      <form onSubmit={handleSubmit} className="space-y-4 px-6 pb-6 pt-5">
-        <div className="flex items-center justify-between rounded-xl bg-slate-50 px-4 py-3 ring-1 ring-inset ring-slate-200/70">
-          <span className="text-[13px] font-medium text-slate-500">Último turno llamado</span>
-          <span className="font-display text-xl font-bold tracking-wide text-slate-900">{formatTurn(currentLetter, currentNumber)}</span>
-        </div>
-        <div className="grid grid-cols-[104px_1fr] gap-3">
-          <div>
-            <Label htmlFor="mt-letter">Letra</Label>
-            <Select id="mt-letter" value={letter} onChange={(e) => setLetter(e.target.value)}>
-              {ALL_LETTERS.map((l) => (
-                <option key={l} value={l}>{l}</option>
-              ))}
-            </Select>
+      <div className="flex flex-1 flex-col justify-between gap-6 px-6 pb-6 pt-5">
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="flex items-center justify-between rounded-xl bg-slate-50 px-4 py-3 ring-1 ring-inset ring-slate-200/70">
+            <span className="text-[13px] font-medium text-slate-500">Último turno llamado</span>
+            <span className="font-display text-xl font-bold tracking-wide text-slate-900">{formatTurn(currentLetter, currentNumber)}</span>
           </div>
-          <div>
-            <Label htmlFor="mt-number">Próximo número</Label>
-            <Input
-              id="mt-number"
-              inputMode="numeric"
-              placeholder="1 – 99"
-              maxLength={2}
-              value={number}
-              onChange={(e) => setNumber(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))}
-            />
+          <div className="grid grid-cols-[104px_1fr] gap-3">
+            <div>
+              <Label htmlFor="mt-letter">Letra</Label>
+              <Select id="mt-letter" value={letter} onChange={(e) => setLetter(e.target.value)}>
+                {ALL_LETTERS.map((l) => (
+                  <option key={l} value={l}>{l}</option>
+                ))}
+              </Select>
+            </div>
+            <div>
+              <Label htmlFor="mt-number">Próximo número</Label>
+              <Input
+                id="mt-number"
+                inputMode="numeric"
+                placeholder="1 – 99"
+                maxLength={2}
+                value={number}
+                onChange={(e) => setNumber(e.target.value.replace(/[^0-9]/g, '').slice(0, 2))}
+              />
+            </div>
           </div>
-        </div>
-        {status && <Alert tone={status.tone}>{status.text}</Alert>}
-        <Button type="submit" variant={area.key === 'admin' ? 'primary' : 'soft'} size="lg" block>
-          Fijar próximo turno
-        </Button>
-      </form>
+          {status && <Alert tone={status.tone}>{status.text}</Alert>}
+          <Button type="submit" variant={area.key === 'admin' ? 'primary' : 'soft'} size="lg" block>
+            Fijar próximo turno
+          </Button>
+        </form>
+        {children}
+      </div>
     </Card>
   );
 }

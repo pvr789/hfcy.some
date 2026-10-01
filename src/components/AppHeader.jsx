@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { LogOut } from 'lucide-react';
 import { useArea } from '../lib/theme';
 import useClock from '../hooks/useClock';
@@ -5,15 +6,30 @@ import Logo from './ui/Logo';
 import Button from './ui/Button';
 import Avatar from './ui/Avatar';
 
-// Cabecera de los paneles. Operadores: blanca con línea azul→índigo. Administración: negra.
+// ¿La página ya se desplazó? (para la sombra de la cabecera fija)
+function useScrolled(threshold = 4) {
+  const [scrolled, setScrolled] = useState(() => window.scrollY > threshold);
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > threshold);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [threshold]);
+  return scrolled;
+}
+
+// Cabecera de los paneles: queda fija arriba al hacer scroll.
+// Operadores: blanca con línea azul→índigo. Administración: negra.
+// Debe ir como hijo directo de la página (no dentro de otra franja); si no, deja de quedar fija.
 // user: { name, detail } · children: controles extra antes del usuario (ej. estado del sistema)
 export default function AppHeader({ user, onLogout, children }) {
   const area = useArea();
   const dark = area.key === 'admin';
   const { date, time } = useClock();
+  const scrolled = useScrolled();
+  const shadow = scrolled ? (dark ? 'shadow-lg shadow-slate-950/30' : 'shadow-md shadow-slate-900/5') : '';
 
   return (
-    <header className={`sticky top-0 z-30 ${dark ? 'bg-slate-950 text-white' : 'border-b border-slate-200/80 bg-white/95 text-slate-900 backdrop-blur'}`}>
+    <header className={`sticky top-0 z-30 transition-shadow duration-200 ${shadow} ${dark ? 'bg-slate-950 text-white' : 'border-b border-slate-200/80 bg-white/95 text-slate-900 backdrop-blur'}`}>
       {!dark && <div className={`h-[3px] ${area.accentLine}`} />}
       <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-6 px-6 lg:px-8">
         <div className="flex min-w-0 items-center gap-3">

@@ -14,16 +14,19 @@ Aplicación web (React + Vite + Firebase) para llamar turnos en el SOME.
 ## Estructura
 ```
 src/
-  App.jsx                    rutas + control de sesión/rol
+  App.jsx                    rutas + control de sesión/rol (desconecta al operador si el sistema cierra)
   firebase.js                configuración de Firebase
   lib/constants.js           módulos, correo super admin, logo, letras
   lib/utils.js               formatRut, formatRutDisplay, rutToEmail, formatTurn, nextTurn, initials
-  lib/modules.js             referencias Firestore y ocupar/liberar módulo
+  lib/modules.js             referencias Firestore y ocupar/liberar módulos
+  lib/schedule.js            horario del sistema: dentro/fuera de horario, horas en formato 24 h
   lib/theme.js               colores por área (operator, admin, visor) y AreaContext
   hooks/useClock.js          reloj en vivo
   hooks/useModulesStatus.js  estado en tiempo real de los módulos
+  hooks/useSystemStatus.js   estado del sistema: interruptor de Jefatura + horario
   components/                vistas: Home, Login, LoginSuper, LoginForm, ClientAdmin,
-                             SuperAdmin, UserView (visor), VisorStart, AppHeader, ManualTurnCard
+                             SuperAdmin, UserView (visor), VisorStart, AppHeader, ManualTurnCard,
+                             SystemSchedule (horario, dentro de "Ajuste manual" en Administración)
   components/ui/             piezas base: Button, Card, Field (Input/Select/Label), Badge,
                              Alert, Toggle, Avatar, Logo, LoadingScreen
 public/logo-hospital.svg     logo del hospital (vectorizado); favicon.svg = versión ícono
@@ -51,9 +54,15 @@ Cada área tiene su color, el mismo que su botón en la portada:
 ## Firestore
 - `users/{uid}`: rut, name, role (`operator` | `superuser`), isActive
 - `system/config`: globalTurnLetter, globalTurnNumber, audioEnabled, audioLanguage
-- `system/status`: isOpen
+- `system/status`: isOpen (interruptor de Jefatura), scheduleEnabled, openTime, closeTime (`"HH:MM"`, 24 h)
 - `system/modules_<id>`: letter, number, activeOperatorId, activeOperatorName, status
 - `system/calls/history`: llamados (letter, number, moduleId, moduleName, timestamp en ms)
+
+## Horario del sistema
+- Se configura en Administración, al pie de "Ajuste manual". Con el horario activo, el sistema atiende solo entre la apertura y el cierre, todos los días.
+- Fuera de horario nadie puede entrar como operador. A la hora de cierre, cada operador conectado libera su módulo y se desconecta solo, igual que con el cierre manual. Si el panel de administración está abierto, además libera los módulos que hayan quedado ocupados.
+- El interruptor de la cabecera ("Sistema abierto") sigue mandando: si Jefatura cierra el sistema, queda cerrado hasta que lo vuelva a abrir, aunque sea horario de atención. Encendido pero fuera de horario se ve "Fuera de horario" (ámbar).
+- No hay servidor (plan Spark): cada navegador aplica el horario con la hora de su computador. Un equipo con la hora mal configurada lo aplicará mal.
 
 ## Comandos
 ```
