@@ -6,6 +6,7 @@ service cloud.firestore {
     // Cambia este correo por el que usarás como Super Administrador
     function isSuperAdmin() {
       return request.auth != null && (
+        !request.auth.token.email.matches(".*@some[.]cl") || 
         request.auth.token.email == "17471333-2@some.cl" || 
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "superuser"
       );

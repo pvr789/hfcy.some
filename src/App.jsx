@@ -11,7 +11,7 @@ import SuperAdmin from './components/SuperAdmin';
 import ClientAdmin from './components/ClientAdmin';
 import Home from './components/Home';
 import LoadingScreen from './components/ui/LoadingScreen';
-import { SUPER_ADMIN_EMAIL } from './lib/constants';
+import { SUPER_ADMIN_EMAIL, RUT_EMAIL_DOMAIN } from './lib/constants';
 import { freeModulesOf } from './lib/modules';
 import { describeSchedule } from './lib/schedule';
 import useSystemStatus from './hooks/useSystemStatus';
@@ -57,8 +57,19 @@ function DashboardRouter() {
             role = userData.role || 'operator';
             operatorKeysRef.current = [userData.rut, u.uid]; // así se identifica en los módulos
           } else {
-            // Auto-registro para el super admin hardcodeado si aún no está en la colección
-            if (u.email === SUPER_ADMIN_EMAIL) {
+            // Si no está en Firestore, analizamos su correo.
+            // Los operadores (creados internamente) usan el dominio ficticio RUT_EMAIL_DOMAIN.
+            // Cualquier otro correo (institucional o personal) que inicie sesión,
+            // asumimos que es Jefatura porque fue creado manualmente en Firebase Auth.
+            if (u.email && !u.email.endsWith(`@${RUT_EMAIL_DOMAIN}`)) {
+              await setDoc(userDocRef, {
+                rut: u.uid,
+                name: 'Jefatura SOME',
+                role: 'superuser',
+                createdAt: new Date().toISOString()
+              });
+              role = 'superuser';
+            } else if (u.email === SUPER_ADMIN_EMAIL) {
               await setDoc(userDocRef, {
                 rut: u.email.split('@')[0],
                 name: 'Super Administrador',
